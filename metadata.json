@@ -1,0 +1,5 @@
+{
+  "name": "PromptForge",
+  "description": "A modular AI prompt builder that lets you manage, organize, and merge snippet blocks into complex image generation prompts, featuring Gemini-powered enhancement and preview generation.",
+  "requestFramePermissions": []
+}
