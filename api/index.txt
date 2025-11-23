@@ -1,0 +1,155 @@
+<?php
+// RENAME THIS FILE TO: index.php
+
+// 1. CORS Headers
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Headers: Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
+header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+header("Content-Type: application/json; charset=UTF-8");
+
+// 2. Handle Preflight
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
+
+// 3. Database Connection
+// Ensure config.php exists (rename config.txt if needed)
+if (!file_exists('config.php')) {
+    http_response_code(500);
+    echo json_encode(['error' => 'Missing config.php. Please rename config.txt to config.php']);
+    exit;
+}
+$pdo = require_once 'config.php';
+
+// 4. Router Logic
+$requestUri = $_SERVER['REQUEST_URI'];
+$path = parse_url($requestUri, PHP_URL_PATH);
+
+// Helper to cast ID to string for JS compatibility
+function mapTypes($row) {
+    if (!$row) return $row;
+    if (isset($row['id'])) $row['id'] = (string)$row['id'];
+    if (isset($row['timestamp'])) $row['timestamp'] = (float)$row['timestamp'];
+    if (isset($row['seed'])) $row['seed'] = (float)$row['seed'];
+    return $row;
+}
+
+// Get Request Body
+$input = json_decode(file_get_contents('php://input'), true);
+$method = $_SERVER['REQUEST_METHOD'];
+
+try {
+    // --- BLOCKS ---
+    if (strpos($path, 'blocks') !== false) {
+        // Extract ID from path if present (e.g. /blocks/12)
+        $id = null;
+        if (preg_match('/\/blocks\/(\d+)/', $path, $matches)) {
+            $id = $matches[1];
+        }
+
+        if ($method === 'GET') {
+            $stmt = $pdo->query("SELECT * FROM prompt_blocks ORDER BY createdAt DESC");
+            $rows = $stmt->fetchAll();
+            echo json_encode(array_map('mapTypes', $rows));
+        } 
+        elseif ($method === 'POST') {
+            $stmt = $pdo->prepare("INSERT INTO prompt_blocks (title, content, tag, subTag, createdAt) VALUES (?, ?, ?, ?, ?)");
+            $createdAt = round(microtime(true) * 1000); // JS timestamp (ms)
+            $subTag = isset($input['subTag']) ? $input['subTag'] : '';
+            $stmt->execute([$input['title'], $input['content'], $input['tag'], $subTag, $createdAt]);
+            
+            $input['id'] = (string)$pdo->lastInsertId();
+            $input['createdAt'] = $createdAt;
+            echo json_encode($input);
+        }
+        elseif ($method === 'PUT' && $id) {
+            $stmt = $pdo->prepare("UPDATE prompt_blocks SET title=?, content=?, tag=?, subTag=? WHERE id=?");
+            $subTag = isset($input['subTag']) ? $input['subTag'] : '';
+            $stmt->execute([$input['title'], $input['content'], $input['tag'], $subTag, $id]);
+            
+            // Return updated
+            $stmt = $pdo->prepare("SELECT * FROM prompt_blocks WHERE id=?");
+            $stmt->execute([$id]);
+            echo json_encode(mapTypes($stmt->fetch()));
+        }
+        elseif ($method === 'DELETE' && $id) {
+            $stmt = $pdo->prepare("DELETE FROM prompt_blocks WHERE id=?");
+            $stmt->execute([$id]);
+            echo json_encode(['success' => true]);
+        }
+    }
+
+    // --- HISTORY ---
+    elseif (strpos($path, 'history') !== false) {
+        if ($method === 'GET') {
+            $stmt = $pdo->query("SELECT content FROM prompt_history ORDER BY id DESC LIMIT 50");
+            echo json_encode($stmt->fetchAll());
+        }
+        elseif ($method === 'POST') {
+            $stmt = $pdo->prepare("INSERT INTO prompt_history (content) VALUES (?)");
+            $stmt->execute([$input['content']]);
+            echo json_encode(['success' => true]);
+        }
+        elseif ($method === 'DELETE') {
+            $pdo->exec("TRUNCATE TABLE prompt_history");
+            echo json_encode(['success' => true]);
+        }
+    }
+
+    // --- IMAGES ---
+    elseif (strpos($path, 'images') !== false) {
+        if ($method === 'GET') {
+            $stmt = $pdo->query("SELECT * FROM generated_images ORDER BY timestamp DESC LIMIT 20");
+            $rows = $stmt->fetchAll();
+            echo json_encode(array_map('mapTypes', $rows));
+        }
+        elseif ($method === 'POST') {
+            $stmt = $pdo->prepare("INSERT INTO generated_images (url, prompt, timestamp, seed) VALUES (?, ?, ?, ?)");
+            $stmt->execute([$input['url'], $input['prompt'], $input['timestamp'], $input['seed']]);
+            echo json_encode(['success' => true]);
+        }
+        elseif ($method === 'DELETE') {
+            $pdo->exec("TRUNCATE TABLE generated_images");
+            echo json_encode(['success' => true]);
+        }
+    }
+
+    // --- SAVED PROMPTS ---
+    elseif (strpos($path, 'saved-prompts') !== false) {
+        $id = null;
+        if (preg_match('/\/saved-prompts\/(\d+)/', $path, $matches)) {
+            $id = $matches[1];
+        }
+
+        if ($method === 'GET') {
+            $stmt = $pdo->query("SELECT * FROM saved_prompts ORDER BY timestamp DESC");
+            $rows = $stmt->fetchAll();
+            echo json_encode(array_map('mapTypes', $rows));
+        }
+        elseif ($method === 'POST') {
+            $stmt = $pdo->prepare("INSERT INTO saved_prompts (content, timestamp) VALUES (?, ?)");
+            $timestamp = round(microtime(true) * 1000);
+            $stmt->execute([$input['content'], $timestamp]);
+            echo json_encode(['id' => (string)$pdo->lastInsertId(), 'content' => $input['content'], 'timestamp' => $timestamp]);
+        }
+        elseif ($method === 'DELETE' && $id) {
+            $stmt = $pdo->prepare("DELETE FROM saved_prompts WHERE id=?");
+            $stmt->execute([$id]);
+            echo json_encode(['success' => true]);
+        }
+        elseif ($method === 'DELETE') {
+            $pdo->exec("TRUNCATE TABLE saved_prompts");
+            echo json_encode(['success' => true]);
+        }
+    }
+    else {
+        http_response_code(404);
+        echo json_encode(['error' => 'Endpoint not found', 'path' => $path]);
+    }
+
+} catch (Exception $e) {
+    http_response_code(500);
+    echo json_encode(['error' => $e->getMessage()]);
+}
+?>

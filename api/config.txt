@@ -1,0 +1,69 @@
+<?php
+// RENAME THIS FILE TO: config.php
+
+// Database configuration
+// defaults to localhost/root/no-password if not set in env
+$host = getenv('DB_HOST') ?: 'localhost';
+$user = getenv('DB_USER') ?: 'root';
+$pass = getenv('DB_PASSWORD') ?: '';
+$dbname = getenv('DB_NAME') ?: 'promptforge';
+$charset = 'utf8mb4';
+
+$options = [
+    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    PDO::ATTR_EMULATE_PREPARES   => false,
+];
+
+try {
+    // 1. Try to connect to specific database
+    $dsn = "mysql:host=$host;dbname=$dbname;charset=$charset";
+    $pdo = new PDO($dsn, $user, $pass, $options);
+} catch (\PDOException $e) {
+    // 2. If DB doesn't exist, try connecting to server root and creating it
+    try {
+        $dsn_no_db = "mysql:host=$host;charset=$charset";
+        $pdo = new PDO($dsn_no_db, $user, $pass, $options);
+        
+        // Create Database
+        $pdo->exec("CREATE DATABASE IF NOT EXISTS `$dbname`");
+        $pdo->exec("USE `$dbname`");
+        
+        // Create Tables
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS prompt_blocks (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                content TEXT NOT NULL,
+                tag VARCHAR(100) NOT NULL,
+                subTag VARCHAR(100),
+                createdAt BIGINT
+            );
+            CREATE TABLE IF NOT EXISTS prompt_history (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                content TEXT NOT NULL,
+                createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS generated_images (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                url LONGTEXT NOT NULL,
+                prompt TEXT,
+                timestamp BIGINT,
+                seed BIGINT
+            );
+            CREATE TABLE IF NOT EXISTS saved_prompts (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                content TEXT NOT NULL,
+                timestamp BIGINT
+            );
+        ");
+    } catch (\PDOException $e2) {
+        // Fatal error
+        header('HTTP/1.1 500 Internal Server Error');
+        echo json_encode(['error' => 'Database connection failed: ' . $e->getMessage()]);
+        exit;
+    }
+}
+
+return $pdo;
+?>

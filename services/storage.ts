@@ -1,15 +1,22 @@
 import { PromptBlock, BlockFormData, GeneratedImage, SavedPrompt } from '../types';
 
-// Default to port 8000 for PHP development server
+// Points to the PHP built-in server default port
+// Ensure you have renamed api/config.txt -> api/config.php and api/index.txt -> api/index.php
+// Run server with: php -S localhost:8000 api/index.php
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 // Helper to handle response errors
 const handleResponse = async (response: Response) => {
+  const text = await response.text();
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || response.statusText);
+    throw new Error(text || response.statusText);
   }
-  return response.json();
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch (e) {
+    console.error("Failed to parse JSON response. Raw text:", text);
+    throw new Error("Invalid JSON response from server. Check PHP logs and ensure api/config.php exists.");
+  }
 };
 
 /* --- Blocks (MySQL Table: prompt_blocks) --- */
@@ -19,7 +26,7 @@ export const getBlocks = async (): Promise<PromptBlock[]> => {
     const response = await fetch(`${API_BASE_URL}/blocks`);
     return handleResponse(response);
   } catch (e) {
-    console.error('Failed to fetch blocks:', e);
+    console.error('Failed to fetch blocks. Ensure you have renamed .txt files to .php and server is running.', e);
     return [];
   }
 };
@@ -35,7 +42,7 @@ export const saveBlock = async (block: BlockFormData): Promise<PromptBlock> => {
 
 export const updateBlock = async (id: string, data: BlockFormData): Promise<PromptBlock> => {
   const response = await fetch(`${API_BASE_URL}/blocks/${id}`, {
-    method: 'PUT', // or PATCH
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
@@ -69,7 +76,7 @@ export const getHistory = async (): Promise<string[]> => {
         const response = await fetch(`${API_BASE_URL}/history`);
         const data = await handleResponse(response);
         // Map backend objects { content: string } to simple string[]
-        return data.map((item: any) => item.content || item); 
+        return Array.isArray(data) ? data.map((item: any) => item.content || item) : []; 
     } catch {
         return [];
     }
@@ -96,7 +103,8 @@ export const saveImageToHistory = async (image: GeneratedImage): Promise<void> =
 export const getImageHistory = async (): Promise<GeneratedImage[]> => {
   try {
     const response = await fetch(`${API_BASE_URL}/images`);
-    return handleResponse(response);
+    const data = await handleResponse(response);
+    return Array.isArray(data) ? data : [];
   } catch {
     return [];
   }
@@ -111,7 +119,8 @@ export const clearImageHistory = async (): Promise<void> => {
 export const getSavedPrompts = async (): Promise<SavedPrompt[]> => {
   try {
     const response = await fetch(`${API_BASE_URL}/saved-prompts`);
-    return handleResponse(response);
+    const data = await handleResponse(response);
+    return Array.isArray(data) ? data : [];
   } catch {
     return [];
   }
