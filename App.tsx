@@ -33,7 +33,11 @@ const App: React.FC = () => {
 
   // Load initial data
   useEffect(() => {
-    setBlocks(getBlocks());
+    const fetchBlocks = async () => {
+      const data = await getBlocks();
+      setBlocks(data);
+    };
+    fetchBlocks();
   }, []);
 
   // Compute unique tags for Folder/Group suggestions
@@ -53,20 +57,33 @@ const App: React.FC = () => {
   }, [prompt]);
 
   // CRUD Handlers
-  const handleSaveBlock = (data: BlockFormData) => {
-    if (editingBlock) {
-      setBlocks(updateBlock(editingBlock.id, data));
-    } else {
-      setBlocks(prev => [saveBlock(data), ...prev]);
+  const handleSaveBlock = async (data: BlockFormData) => {
+    try {
+      if (editingBlock) {
+        const updated = await updateBlock(editingBlock.id, data);
+        setBlocks(prev => prev.map(b => b.id === updated.id ? updated : b));
+      } else {
+        const newBlock = await saveBlock(data);
+        setBlocks(prev => [newBlock, ...prev]);
+      }
+      setEditingBlock(null);
+    } catch (error) {
+      console.error("Failed to save block:", error);
+      alert("Failed to save block. Please ensure backend is running.");
     }
-    setEditingBlock(null);
   };
 
-  const handleSaveAnalysisBlocks = (blocksData: BlockFormData[]) => {
-    const newBlocks = blocksData.map(data => saveBlock(data));
-    setBlocks(prev => [...newBlocks, ...prev]);
-    setIsAnalysisModalOpen(false);
-    setAnalysisSuggestions([]);
+  const handleSaveAnalysisBlocks = async (blocksData: BlockFormData[]) => {
+    try {
+      // Execute in parallel
+      const savePromises = blocksData.map(data => saveBlock(data));
+      const newBlocks = await Promise.all(savePromises);
+      setBlocks(prev => [...newBlocks, ...prev]);
+      setIsAnalysisModalOpen(false);
+      setAnalysisSuggestions([]);
+    } catch (error) {
+      console.error("Failed to save analysis blocks:", error);
+    }
   };
 
   const handleCloneBlock = (data: BlockFormData) => {
@@ -79,9 +96,15 @@ const App: React.FC = () => {
     // Keep modal open, but it will re-render as "New Block" with copied data
   };
 
-  const handleDeleteBlock = (id: string) => {
+  const handleDeleteBlock = async (id: string) => {
     if (window.confirm('Are you sure you want to delete this block?')) {
-      setBlocks(deleteBlock(id));
+      try {
+        await deleteBlock(id);
+        setBlocks(prev => prev.filter(b => b.id !== id));
+      } catch (error) {
+        console.error("Failed to delete block:", error);
+        alert("Failed to delete block.");
+      }
     }
   };
 
@@ -200,7 +223,7 @@ const App: React.FC = () => {
       setGeneratedImage(newImage);
       
       // Save generated image to history
-      saveImageToHistory(newImage);
+      await saveImageToHistory(newImage);
     } catch (e) {
        alert("Failed to generate image. Please check your API key.");
     } finally {

@@ -51,9 +51,21 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
   // Load history when panel is opened or new image generated
   useEffect(() => {
     if (showHistory) {
-      setHistoryItems(getHistory());
-      setImageHistory(getImageHistory());
-      setSavedPrompts(getSavedPrompts());
+        const loadData = async () => {
+            try {
+                const [hData, iData, sData] = await Promise.all([
+                    getHistory(),
+                    getImageHistory(),
+                    getSavedPrompts()
+                ]);
+                setHistoryItems(hData);
+                setImageHistory(iData);
+                setSavedPrompts(sData);
+            } catch (e) {
+                console.error("Failed to load history data", e);
+            }
+        };
+        loadData();
     }
   }, [showHistory, generatedImage]);
 
@@ -71,36 +83,48 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
       setShowHistory(false);
   }
 
-  const handleSavePrompt = () => {
+  const handleSavePrompt = async () => {
       if (!prompt.trim()) return;
-      const updated = saveSavedPrompt(prompt);
-      setSavedPrompts(updated);
-      setActiveTab('saved');
-      setShowHistory(true);
+      try {
+        const newPrompt = await saveSavedPrompt(prompt);
+        setSavedPrompts(prev => [newPrompt, ...prev]);
+        setActiveTab('saved');
+        setShowHistory(true);
+      } catch (e) {
+          console.error("Failed to save prompt", e);
+      }
   };
 
-  const handleDeleteSaved = (id: string, e: React.MouseEvent) => {
+  const handleDeleteSaved = async (id: string, e: React.MouseEvent) => {
       e.stopPropagation();
-      const updated = deleteSavedPrompt(id);
-      setSavedPrompts(updated);
+      try {
+        await deleteSavedPrompt(id);
+        setSavedPrompts(prev => prev.filter(p => p.id !== id));
+      } catch (e) {
+          console.error("Failed to delete saved prompt", e);
+      }
   };
 
-  const handleClearHistory = () => {
-    if (activeTab === 'prompts') {
-        if (window.confirm('Clear all prompt history?')) {
-            clearHistory();
-            setHistoryItems([]);
+  const handleClearHistory = async () => {
+    try {
+        if (activeTab === 'prompts') {
+            if (window.confirm('Clear all prompt history?')) {
+                await clearHistory();
+                setHistoryItems([]);
+            }
+        } else if (activeTab === 'images') {
+            if (window.confirm('Clear all image history?')) {
+                await clearImageHistory();
+                setImageHistory([]);
+            }
+        } else if (activeTab === 'saved') {
+            if (window.confirm('Clear all saved prompts?')) {
+                await clearSavedPrompts();
+                setSavedPrompts([]);
+            }
         }
-    } else if (activeTab === 'images') {
-        if (window.confirm('Clear all image history?')) {
-            clearImageHistory();
-            setImageHistory([]);
-        }
-    } else if (activeTab === 'saved') {
-        if (window.confirm('Clear all saved prompts?')) {
-            clearSavedPrompts();
-            setSavedPrompts([]);
-        }
+    } catch (e) {
+        console.error("Failed to clear history", e);
     }
   };
 
@@ -122,7 +146,10 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
   };
 
   const formatDate = (ts: number) => {
-      return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      // Handle MySQL timestamp strings or JS number timestamps
+      const date = new Date(ts);
+      if (isNaN(date.getTime())) return '';
+      return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
 
   return (
