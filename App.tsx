@@ -69,7 +69,7 @@ const App: React.FC = () => {
       setEditingBlock(null);
     } catch (error) {
       console.error("Failed to save block:", error);
-      alert("Failed to save block. Please ensure backend is running.");
+      alert("Failed to save block. Please check console for details.");
     }
   };
 

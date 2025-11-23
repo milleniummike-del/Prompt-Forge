@@ -1,0 +1,46 @@
+-- Database Schema for PromptForge
+-- Run this SQL script in your MySQL client (e.g., phpMyAdmin) if the auto-setup fails.
+
+CREATE DATABASE IF NOT EXISTS `promptforge`;
+USE `promptforge`;
+
+-- Table: prompt_blocks
+-- Stores the reusable prompt segments in the library
+CREATE TABLE IF NOT EXISTS `prompt_blocks` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `title` varchar(255) NOT NULL,
+  `content` text NOT NULL,
+  `tag` varchar(100) NOT NULL,
+  `subTag` varchar(100) DEFAULT NULL,
+  `createdAt` bigint(20) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Table: prompt_history
+-- Stores recent prompt activity for the "Previous" list
+CREATE TABLE IF NOT EXISTS `prompt_history` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `content` text NOT NULL,
+  `createdAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Table: generated_images
+-- Stores history of generated images
+CREATE TABLE IF NOT EXISTS `generated_images` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `url` longtext NOT NULL,
+  `prompt` text,
+  `timestamp` bigint(20) DEFAULT NULL,
+  `seed` bigint(20) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Table: saved_prompts
+-- Stores specific prompts saved by the user
+CREATE TABLE IF NOT EXISTS `saved_prompts` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `content` text NOT NULL,
+  `timestamp` bigint(20) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
