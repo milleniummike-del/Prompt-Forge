@@ -6,7 +6,7 @@ import { AnalysisModal } from './components/AnalysisModal';
 import { PromptBlock, BlockFormData, GeneratedImage } from './types';
 import { getBlocks, saveBlock, updateBlock, deleteBlock, saveHistory, saveImageToHistory } from './services/storage';
 import { enhancePrompt, generateImagePreview, analyzePromptForBlocks } from './services/gemini';
-import { Menu, X } from 'lucide-react';
+import { Menu } from 'lucide-react';
 
 const App: React.FC = () => {
   // State
@@ -141,7 +141,7 @@ const App: React.FC = () => {
       if (regex.test(prev)) {
         // Remove the segment
         // Logic: Identify if we are removing from start, middle, or end to handle commas correctly
-        let newPrompt = prev.replace(regex, (match, p1, p2) => {
+        let newPrompt = prev.replace(regex, (_match, p1, p2) => {
           // If flanked by commas (middle of list), keep one comma
           if (p1 && p1.includes(',') && p2 && p2.includes(',')) {
             return ', ';

@@ -1,5 +1,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
+declare const process: any;
+
 // Initialize Gemini Client
 // WARNING: In a production app, never expose API keys on the client side.
 // This is for demonstration using the user's local environment key.

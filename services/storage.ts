@@ -1,13 +1,17 @@
 import { PromptBlock, BlockFormData, GeneratedImage, SavedPrompt } from '../types';
 
+declare const process: any;
+
 // ==========================================
 // STORAGE CONFIGURATION
 // ==========================================
-// 'API'   - Use PHP Backend (requires php -S localhost:8000 api/index.php)
+// 'API'   - Use PHP Backend (e.g. yourdomain.com/api/)
 // 'LOCAL' - Use Browser LocalStorage (no server required)
-export const STORAGE_MODE: 'API' | 'LOCAL' = 'LOCAL'; 
+export const STORAGE_MODE: 'API' | 'LOCAL' = (process.env.STORAGE_MODE as 'API' | 'LOCAL') || 'LOCAL'; 
 
-const API_BASE_URL = 'http://localhost:8000';
+// Points to the folder containing index.php. 
+// Using './api' allows the app to be deployed in a subdirectory (e.g. domain.com/apps/promptforge/)
+const API_BASE_URL = './api';
 
 const LS_KEYS = {
     BLOCKS: 'pf_blocks',
@@ -57,7 +61,8 @@ export const getBlocks = async (): Promise<PromptBlock[]> => {
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/blocks`);
+    // GET ./api?endpoint=blocks
+    const response = await fetch(`${API_BASE_URL}?endpoint=blocks`);
     return handleResponse(response);
   } catch (e) {
     console.warn('API fetch failed, returning empty list.', e);
@@ -77,7 +82,7 @@ export const saveBlock = async (block: BlockFormData): Promise<PromptBlock> => {
       return newBlock;
   }
 
-  const response = await fetch(`${API_BASE_URL}/blocks`, {
+  const response = await fetch(`${API_BASE_URL}?endpoint=blocks`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(block),
@@ -97,7 +102,8 @@ export const updateBlock = async (id: string, data: BlockFormData): Promise<Prom
       return updatedBlock;
   }
 
-  const response = await fetch(`${API_BASE_URL}/blocks/${id}`, {
+  // PUT ./api?endpoint=blocks&id=123
+  const response = await fetch(`${API_BASE_URL}?endpoint=blocks&id=${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -112,7 +118,8 @@ export const deleteBlock = async (id: string): Promise<void> => {
       return;
   }
 
-  const response = await fetch(`${API_BASE_URL}/blocks/${id}`, {
+  // DELETE ./api?endpoint=blocks&id=123
+  const response = await fetch(`${API_BASE_URL}?endpoint=blocks&id=${id}`, {
     method: 'DELETE',
   });
   if (!response.ok) throw new Error('Failed to delete block');
@@ -134,7 +141,7 @@ export const saveHistory = async (prompt: string): Promise<void> => {
     }
 
     try {
-        await fetch(`${API_BASE_URL}/history`, {
+        await fetch(`${API_BASE_URL}?endpoint=history`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: prompt }),
@@ -151,7 +158,7 @@ export const getHistory = async (): Promise<string[]> => {
     }
 
     try {
-        const response = await fetch(`${API_BASE_URL}/history`);
+        const response = await fetch(`${API_BASE_URL}?endpoint=history`);
         const data = await handleResponse(response);
         return Array.isArray(data) ? data.map((item: any) => item.content || item) : []; 
     } catch {
@@ -164,7 +171,7 @@ export const clearHistory = async (): Promise<void> => {
         setLS(LS_KEYS.HISTORY, []);
         return;
     }
-    await fetch(`${API_BASE_URL}/history`, { method: 'DELETE' });
+    await fetch(`${API_BASE_URL}?endpoint=history`, { method: 'DELETE' });
 }
 
 /* --- Image History --- */
@@ -178,7 +185,7 @@ export const saveImageToHistory = async (image: GeneratedImage): Promise<void> =
   }
 
   try {
-    await fetch(`${API_BASE_URL}/images`, {
+    await fetch(`${API_BASE_URL}?endpoint=images`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(image),
@@ -194,7 +201,7 @@ export const getImageHistory = async (): Promise<GeneratedImage[]> => {
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/images`);
+    const response = await fetch(`${API_BASE_URL}?endpoint=images`);
     const data = await handleResponse(response);
     return Array.isArray(data) ? data : [];
   } catch {
@@ -207,7 +214,7 @@ export const clearImageHistory = async (): Promise<void> => {
         setLS(LS_KEYS.IMAGES, []);
         return;
     }
-    await fetch(`${API_BASE_URL}/images`, { method: 'DELETE' });
+    await fetch(`${API_BASE_URL}?endpoint=images`, { method: 'DELETE' });
 };
 
 /* --- Saved Prompts --- */
@@ -218,7 +225,7 @@ export const getSavedPrompts = async (): Promise<SavedPrompt[]> => {
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/saved-prompts`);
+    const response = await fetch(`${API_BASE_URL}?endpoint=saved-prompts`);
     const data = await handleResponse(response);
     return Array.isArray(data) ? data : [];
   } catch {
@@ -238,7 +245,7 @@ export const saveSavedPrompt = async (content: string): Promise<SavedPrompt> => 
       return newSaved;
   }
 
-  const response = await fetch(`${API_BASE_URL}/saved-prompts`, {
+  const response = await fetch(`${API_BASE_URL}?endpoint=saved-prompts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
@@ -252,7 +259,7 @@ export const deleteSavedPrompt = async (id: string): Promise<void> => {
       setLS(LS_KEYS.SAVED, saved.filter(s => s.id !== id));
       return;
   }
-  await fetch(`${API_BASE_URL}/saved-prompts/${id}`, { method: 'DELETE' });
+  await fetch(`${API_BASE_URL}?endpoint=saved-prompts&id=${id}`, { method: 'DELETE' });
 };
 
 export const clearSavedPrompts = async (): Promise<void> => {
@@ -260,5 +267,5 @@ export const clearSavedPrompts = async (): Promise<void> => {
         setLS(LS_KEYS.SAVED, []);
         return;
     }
-    await fetch(`${API_BASE_URL}/saved-prompts`, { method: 'DELETE' });
+    await fetch(`${API_BASE_URL}?endpoint=saved-prompts`, { method: 'DELETE' });
 };

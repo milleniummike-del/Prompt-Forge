@@ -1,0 +1,155 @@
+<?php
+// RENAME THIS FILE TO: index.php
+
+// 1. CORS Headers
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Headers: Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
+header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+header("Content-Type: application/json; charset=UTF-8");
+
+// 2. Handle Preflight
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
+
+// 3. Database Connection
+if (!file_exists('config.php')) {
+    http_response_code(500);
+    echo json_encode(['error' => 'Missing config.php. Please rename config.txt to config.php']);
+    exit;
+}
+$pdo = require_once 'config.php';
+
+// 4. Parameter-Based Routing Logic
+// Request format: /api/?endpoint=blocks&id=1
+$endpoint = isset($_GET['endpoint']) ? $_GET['endpoint'] : '';
+$resourceId = isset($_GET['id']) ? $_GET['id'] : null;
+
+// Helper to cast ID to string for JS compatibility
+function mapTypes($row) {
+    if (!$row) return $row;
+    if (isset($row['id'])) $row['id'] = (string)$row['id'];
+    if (isset($row['timestamp'])) $row['timestamp'] = (float)$row['timestamp'];
+    if (isset($row['seed'])) $row['seed'] = (float)$row['seed'];
+    return $row;
+}
+
+// Get Request Body
+$input = json_decode(file_get_contents('php://input'), true);
+$method = $_SERVER['REQUEST_METHOD'];
+
+try {
+    switch ($endpoint) {
+        // --- BLOCKS ---
+        case 'blocks':
+            if ($method === 'GET') {
+                $stmt = $pdo->query("SELECT * FROM prompt_blocks ORDER BY createdAt DESC");
+                $rows = $stmt->fetchAll();
+                echo json_encode(array_map('mapTypes', $rows));
+            } 
+            elseif ($method === 'POST') {
+                $stmt = $pdo->prepare("INSERT INTO prompt_blocks (title, content, tag, subTag, createdAt) VALUES (?, ?, ?, ?, ?)");
+                $createdAt = round(microtime(true) * 1000); // JS timestamp (ms)
+                $subTag = isset($input['subTag']) ? $input['subTag'] : '';
+                $stmt->execute([$input['title'], $input['content'], $input['tag'], $subTag, $createdAt]);
+                
+                $input['id'] = (string)$pdo->lastInsertId();
+                $input['createdAt'] = $createdAt;
+                echo json_encode($input);
+            }
+            elseif ($method === 'PUT' && $resourceId) {
+                $stmt = $pdo->prepare("UPDATE prompt_blocks SET title=?, content=?, tag=?, subTag=? WHERE id=?");
+                $subTag = isset($input['subTag']) ? $input['subTag'] : '';
+                $stmt->execute([$input['title'], $input['content'], $input['tag'], $subTag, $resourceId]);
+                
+                // Return updated
+                $stmt = $pdo->prepare("SELECT * FROM prompt_blocks WHERE id=?");
+                $stmt->execute([$resourceId]);
+                echo json_encode(mapTypes($stmt->fetch()));
+            }
+            elseif ($method === 'DELETE' && $resourceId) {
+                $stmt = $pdo->prepare("DELETE FROM prompt_blocks WHERE id=?");
+                $stmt->execute([$resourceId]);
+                echo json_encode(['success' => true]);
+            }
+            break;
+
+        // --- HISTORY ---
+        case 'history':
+            if ($method === 'GET') {
+                $stmt = $pdo->query("SELECT content FROM prompt_history ORDER BY id DESC LIMIT 50");
+                echo json_encode($stmt->fetchAll());
+            }
+            elseif ($method === 'POST') {
+                $stmt = $pdo->prepare("INSERT INTO prompt_history (content) VALUES (?)");
+                $stmt->execute([$input['content']]);
+                echo json_encode(['success' => true]);
+            }
+            elseif ($method === 'DELETE') {
+                $pdo->exec("TRUNCATE TABLE prompt_history");
+                echo json_encode(['success' => true]);
+            }
+            break;
+
+        // --- IMAGES ---
+        case 'images':
+            if ($method === 'GET') {
+                $stmt = $pdo->query("SELECT * FROM generated_images ORDER BY timestamp DESC LIMIT 20");
+                $rows = $stmt->fetchAll();
+                echo json_encode(array_map('mapTypes', $rows));
+            }
+            elseif ($method === 'POST') {
+                $stmt = $pdo->prepare("INSERT INTO generated_images (url, prompt, timestamp, seed) VALUES (?, ?, ?, ?)");
+                $stmt->execute([$input['url'], $input['prompt'], $input['timestamp'], $input['seed']]);
+                echo json_encode(['success' => true]);
+            }
+            elseif ($method === 'DELETE') {
+                $pdo->exec("TRUNCATE TABLE generated_images");
+                echo json_encode(['success' => true]);
+            }
+            break;
+
+        // --- SAVED PROMPTS ---
+        case 'saved-prompts':
+            if ($method === 'GET') {
+                $stmt = $pdo->query("SELECT * FROM saved_prompts ORDER BY timestamp DESC");
+                $rows = $stmt->fetchAll();
+                echo json_encode(array_map('mapTypes', $rows));
+            }
+            elseif ($method === 'POST') {
+                $stmt = $pdo->prepare("INSERT INTO saved_prompts (content, timestamp) VALUES (?, ?)");
+                $timestamp = round(microtime(true) * 1000);
+                $stmt->execute([$input['content'], $timestamp]);
+                echo json_encode(['id' => (string)$pdo->lastInsertId(), 'content' => $input['content'], 'timestamp' => $timestamp]);
+            }
+            elseif ($method === 'DELETE' && $resourceId) {
+                $stmt = $pdo->prepare("DELETE FROM saved_prompts WHERE id=?");
+                $stmt->execute([$resourceId]);
+                echo json_encode(['success' => true]);
+            }
+            elseif ($method === 'DELETE') {
+                $pdo->exec("TRUNCATE TABLE saved_prompts");
+                echo json_encode(['success' => true]);
+            }
+            break;
+
+        default:
+            // No endpoint specified or unknown endpoint
+            if (empty($endpoint)) {
+                echo json_encode([
+                    'message' => 'API is working. Use ?endpoint=blocks to fetch data.',
+                    'status' => 'ok'
+                ]);
+            } else {
+                http_response_code(404);
+                echo json_encode(['error' => 'Endpoint not found', 'endpoint' => $endpoint]);
+            }
+            break;
+    }
+
+} catch (Exception $e) {
+    http_response_code(500);
+    echo json_encode(['error' => $e->getMessage()]);
+}
+?>
