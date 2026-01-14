@@ -1,7 +1,9 @@
+
 import React, { useRef, useEffect, useState } from 'react';
-import { Wand2, Image as ImageIcon, Copy, RotateCcw, History, Trash2, X, ImagePlus, Type, FileImage, Hash, ScanSearch, Save, Bookmark } from 'lucide-react';
-import { getHistory, clearHistory, getImageHistory, clearImageHistory, getSavedPrompts, saveSavedPrompt, deleteSavedPrompt, clearSavedPrompts } from '../services/storage';
-import { GeneratedImage, SavedPrompt } from '../types';
+import { Wand2, Image as ImageIcon, Copy, RotateCcw, History, Trash2, X, ImagePlus, Type, FileImage, Hash, ScanSearch, Save, Bookmark, LogOut, Check } from 'lucide-react';
+import { getHistory, clearHistory, getImageHistory, clearImageHistory, getSavedPrompts, saveSavedPrompt, deleteSavedPrompt, clearSavedPrompts, getSavedImages, saveSavedImage, deleteSavedImage, clearSavedImages } from '../services/storage';
+import { GeneratedImage, SavedPrompt, GoogleUser, SavedImage } from '../types';
+import { TokenUsage } from './TokenUsage';
 
 interface PromptCanvasProps {
   prompt: string;
@@ -16,6 +18,9 @@ interface PromptCanvasProps {
   isAnalyzing: boolean;
   generatedImage: GeneratedImage | null;
   setGeneratedImage: (val: GeneratedImage | null) => void;
+  user: GoogleUser | null;
+  onLogout: () => void;
+  onMockLogin: () => void;
 }
 
 export const PromptCanvas: React.FC<PromptCanvasProps> = ({
@@ -31,14 +36,19 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
   isAnalyzing,
   generatedImage,
   setGeneratedImage,
+  user,
+  onLogout,
+  onMockLogin
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showHistory, setShowHistory] = useState(false);
-  const [activeTab, setActiveTab] = useState<'prompts' | 'images' | 'saved'>('prompts');
+  const [activeTab, setActiveTab] = useState<'prompts' | 'images' | 'saved' | 'saved_images'>('saved');
   const [historyItems, setHistoryItems] = useState<string[]>([]);
   const [imageHistory, setImageHistory] = useState<GeneratedImage[]>([]);
   const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
+  const [savedImages, setSavedImages] = useState<SavedImage[]>([]);
+  const [isSavingImage, setIsSavingImage] = useState(false);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -48,19 +58,21 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
     }
   }, [prompt]);
 
-  // Load history when panel is opened or new image generated
+  // Load history when panel is opened or new items generated
   useEffect(() => {
     if (showHistory) {
         const loadData = async () => {
             try {
-                const [hData, iData, sData] = await Promise.all([
+                const [hData, iData, sData, siData] = await Promise.all([
                     getHistory(),
                     getImageHistory(),
-                    getSavedPrompts()
+                    getSavedPrompts(),
+                    getSavedImages()
                 ]);
                 setHistoryItems(hData);
                 setImageHistory(iData);
                 setSavedPrompts(sData);
+                setSavedImages(siData);
             } catch (e) {
                 console.error("Failed to load history data", e);
             }
@@ -95,6 +107,21 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
       }
   };
 
+  const handleSaveImage = async () => {
+      if (!generatedImage) return;
+      setIsSavingImage(true);
+      try {
+          const newSaved = await saveSavedImage(generatedImage);
+          setSavedImages(prev => [newSaved, ...prev]);
+          setActiveTab('saved_images');
+          setShowHistory(true);
+      } catch (e) {
+          console.error("Failed to save image", e);
+      } finally {
+          setIsSavingImage(false);
+      }
+  };
+
   const handleDeleteSaved = async (id: string, e: React.MouseEvent) => {
       e.stopPropagation();
       try {
@@ -103,6 +130,16 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
       } catch (e) {
           console.error("Failed to delete saved prompt", e);
       }
+  };
+
+  const handleDeleteSavedImage = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+        await deleteSavedImage(id);
+        setSavedImages(prev => prev.filter(p => p.id !== id));
+    } catch (e) {
+        console.error("Failed to delete saved image", e);
+    }
   };
 
   const handleClearHistory = async () => {
@@ -122,6 +159,11 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
                 await clearSavedPrompts();
                 setSavedPrompts([]);
             }
+        } else if (activeTab === 'saved_images') {
+            if (window.confirm('Clear all saved images?')) {
+                await clearSavedImages();
+                setSavedImages([]);
+            }
         }
     } catch (e) {
         console.error("Failed to clear history", e);
@@ -134,7 +176,6 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
       const reader = new FileReader();
       reader.onloadend = () => {
         setUploadedImage(reader.result as string);
-        // Reset input value so same file can be selected again if needed
         if (fileInputRef.current) fileInputRef.current.value = '';
       };
       reader.readAsDataURL(file);
@@ -146,11 +187,12 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
   };
 
   const formatDate = (ts: number) => {
-      // Handle MySQL timestamp strings or JS number timestamps
       const date = new Date(ts);
       if (isNaN(date.getTime())) return '';
       return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
+
+  const isAlreadySaved = generatedImage && savedImages.some(si => si.url === generatedImage.url);
 
   return (
     <div className="flex-1 h-full overflow-hidden flex flex-row relative">
@@ -172,7 +214,23 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
                    <h1 className="text-2xl md:text-3xl font-bold text-white mb-1">Canvas</h1>
                    <p className="text-slate-400 text-sm">Assemble your masterpiece. Click blocks to merge.</p>
               </div>
-            <div className="flex gap-2">
+            
+            {/* User Profile & Actions */}
+            <div className="flex items-center gap-3">
+               {user && (
+                   <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-full pl-1 pr-3 py-1">
+                       <img src={user.picture} alt={user.name} className="w-6 h-6 rounded-full" />
+                       <span className="text-xs text-slate-300 font-medium max-w-[80px] truncate hidden md:block">{user.name}</span>
+                       <button onClick={onLogout} className="ml-1 text-slate-500 hover:text-red-400 transition-colors" title="Logout">
+                           <LogOut size={14} />
+                       </button>
+                   </div>
+               )}
+
+              <div className="w-px h-6 bg-slate-800 mx-1"></div>
+              
+              <TokenUsage />
+              <div className="w-px h-6 bg-slate-800 mx-1"></div>
               <button
                 onClick={() => fileInputRef.current?.click()}
                 className={`p-2 rounded-lg transition-colors ${uploadedImage ? 'text-indigo-400 bg-indigo-900/30' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
@@ -191,7 +249,7 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
               <button
                 onClick={() => setShowHistory(!showHistory)}
                 className={`p-2 rounded-lg transition-colors ${showHistory ? 'text-indigo-400 bg-indigo-900/30' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
-                title="Activity & Saved"
+                title="Activity & Vault"
               >
                 <History size={18} />
               </button>
@@ -313,14 +371,26 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
                       alt="Generated output" 
                       className="w-full h-full object-contain"
                   />
-                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
                       <a 
                           href={generatedImage.url} 
                           download={`promptforge-${Date.now()}.png`}
-                          className="bg-white text-black px-4 py-2 rounded-full font-bold hover:scale-105 transition-transform"
+                          className="bg-white text-black px-4 py-2 rounded-full font-bold hover:scale-105 transition-transform flex items-center gap-2"
                       >
                           Download
                       </a>
+                      <button 
+                        onClick={handleSaveImage}
+                        disabled={isSavingImage || isAlreadySaved}
+                        className={`px-4 py-2 rounded-full font-bold hover:scale-105 transition-all flex items-center gap-2 ${
+                            isAlreadySaved 
+                            ? 'bg-emerald-600 text-white cursor-default' 
+                            : 'bg-indigo-600 text-white hover:bg-indigo-500'
+                        }`}
+                      >
+                         {isAlreadySaved ? <Check size={18} /> : <Bookmark size={18} />}
+                         {isSavingImage ? 'Saving...' : (isAlreadySaved ? 'Saved' : 'Save to Vault')}
+                      </button>
                   </div>
                </div>
                <div className="p-3 flex justify-between items-center text-xs text-slate-500 font-mono">
@@ -350,13 +420,14 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
         <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900 shrink-0">
             <h2 className="font-bold text-white flex items-center gap-2">
               <History size={18} className="text-indigo-500" />
-              Activity
+              Vault & Activity
             </h2>
             <div className="flex items-center gap-1">
               {(
                  (activeTab === 'prompts' && historyItems.length > 0) || 
                  (activeTab === 'images' && imageHistory.length > 0) ||
-                 (activeTab === 'saved' && savedPrompts.length > 0)
+                 (activeTab === 'saved' && savedPrompts.length > 0) ||
+                 (activeTab === 'saved_images' && savedImages.length > 0)
                 ) && (
                 <button 
                   onClick={handleClearHistory}
@@ -376,39 +447,50 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
           </div>
 
           {/* Tabs */}
-          <div className="flex border-b border-slate-800 shrink-0">
+          <div className="flex border-b border-slate-800 shrink-0 overflow-x-auto scrollbar-none">
+            <button 
+                className={`flex-1 min-w-[70px] py-3 text-[10px] uppercase tracking-tighter font-bold transition-colors flex flex-col items-center justify-center gap-1 ${
+                    activeTab === 'saved_images' 
+                    ? 'text-indigo-400 border-b-2 border-indigo-500 bg-slate-800/50' 
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/30'
+                }`}
+                onClick={() => setActiveTab('saved_images')}
+            >
+                <Bookmark size={12} />
+                Vault
+            </button>
              <button 
-                className={`flex-1 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+                className={`flex-1 min-w-[70px] py-3 text-[10px] uppercase tracking-tighter font-bold transition-colors flex flex-col items-center justify-center gap-1 ${
                     activeTab === 'saved' 
                     ? 'text-indigo-400 border-b-2 border-indigo-500 bg-slate-800/50' 
                     : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/30'
                 }`}
                 onClick={() => setActiveTab('saved')}
             >
-                <Bookmark size={14} />
+                <Type size={12} />
                 Saved
             </button>
             <button 
-                className={`flex-1 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+                className={`flex-1 min-w-[70px] py-3 text-[10px] uppercase tracking-tighter font-bold transition-colors flex flex-col items-center justify-center gap-1 ${
                     activeTab === 'prompts' 
                     ? 'text-indigo-400 border-b-2 border-indigo-500 bg-slate-800/50' 
                     : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/30'
                 }`}
                 onClick={() => setActiveTab('prompts')}
             >
-                <Type size={14} />
-                Prompts
+                <RotateCcw size={12} />
+                Recents
             </button>
             <button 
-                className={`flex-1 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+                className={`flex-1 min-w-[70px] py-3 text-[10px] uppercase tracking-tighter font-bold transition-colors flex flex-col items-center justify-center gap-1 ${
                     activeTab === 'images' 
                     ? 'text-indigo-400 border-b-2 border-indigo-500 bg-slate-800/50' 
                     : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/30'
                 }`}
                 onClick={() => setActiveTab('images')}
             >
-                <FileImage size={14} />
-                Images
+                <ImageIcon size={12} />
+                Gallery
             </button>
           </div>
           
@@ -416,7 +498,7 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
              {activeTab === 'saved' && (
                 savedPrompts.length === 0 ? (
                     <div className="text-center text-slate-500 mt-8 text-sm">
-                        No saved prompts yet.<br/>Use the save icon in the toolbar.
+                        No saved prompts yet.
                     </div>
                 ) : (
                     savedPrompts.map((item) => (
@@ -444,10 +526,43 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
                 )
             )}
 
+            {activeTab === 'saved_images' && (
+                savedImages.length === 0 ? (
+                    <div className="text-center text-slate-500 mt-8 text-sm">
+                        No images in vault yet.<br/>Use 'Save to Vault' after generating.
+                    </div>
+                ) : (
+                    savedImages.map((item) => (
+                        <div key={item.id} className="relative group">
+                             <div
+                                onClick={() => handleRestoreImage(item)}
+                                className="bg-slate-800/50 hover:bg-slate-800 border rounded-lg cursor-pointer transition-all overflow-hidden border-indigo-500/40"
+                            >
+                                <div className="aspect-square w-full overflow-hidden bg-black relative">
+                                    <img src={item.url} alt="saved" className="w-full h-full object-cover" />
+                                </div>
+                                <div className="p-3">
+                                    <p className="text-xs text-slate-300 font-mono line-clamp-2 mb-2">{item.prompt}</p>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-[10px] text-slate-500">{formatDate(item.timestamp)}</span>
+                                        <button
+                                            onClick={(e) => handleDeleteSavedImage(item.id, e)}
+                                            className="p-1 text-slate-500 hover:text-red-400 hover:bg-slate-700 rounded transition-colors"
+                                        >
+                                            <Trash2 size={12} />
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    ))
+                )
+            )}
+
             {activeTab === 'prompts' && (
                 historyItems.length === 0 ? (
                     <div className="text-center text-slate-500 mt-8 text-sm">
-                        No prompt history yet.<br/>Edits are saved automatically.
+                        No recent activity.
                     </div>
                 ) : (
                     historyItems.map((item, index) => (
@@ -468,9 +583,6 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
                                 {index === 0 && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />}
                                 {index === 0 ? 'Latest' : 'Previous'}
                             </span>
-                            <span className="text-[10px] text-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                                Click to restore
-                            </span>
                         </div>
                         </div>
                     ))
@@ -480,7 +592,7 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
             {activeTab === 'images' && (
                 imageHistory.length === 0 ? (
                     <div className="text-center text-slate-500 mt-8 text-sm">
-                        No image history yet.<br/>Generate a preview to see it here.
+                        No generated images yet.
                     </div>
                 ) : (
                     imageHistory.map((item, index) => (
@@ -488,46 +600,22 @@ export const PromptCanvas: React.FC<PromptCanvasProps> = ({
                             key={index}
                             className="relative group"
                         >
-                            {/* New Badge for most recent */}
-                            {index === 0 && (
-                                <div className="absolute -top-2 -right-2 z-20 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-lg shadow-indigo-500/50 animate-bounce">
-                                    New
-                                </div>
-                            )}
-                            
                             <div
                                 onClick={() => handleRestoreImage(item)}
                                 className={`bg-slate-800/50 hover:bg-slate-800 border rounded-lg cursor-pointer group transition-all overflow-hidden ${
                                     index === 0 
-                                    ? 'border-indigo-500/40 ring-1 ring-indigo-500/20' 
+                                    ? 'border-indigo-500/40' 
                                     : 'border-slate-700 hover:border-indigo-500/50'
                                 }`}
                             >
                                 <div className="aspect-square w-full overflow-hidden bg-black relative">
-                                    <img 
-                                        src={item.url} 
-                                        alt="history" 
-                                        className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-all duration-300 group-hover:scale-105" 
-                                    />
-                                    <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-[1px]">
-                                        <span className="text-xs font-bold text-white bg-black/60 px-3 py-1.5 rounded-full border border-white/20 shadow-xl transform translate-y-2 group-hover:translate-y-0 transition-transform">
-                                            Restore & View
-                                        </span>
-                                    </div>
+                                    <img src={item.url} alt="history" className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-all" />
                                 </div>
                                 <div className="p-3">
-                                    <p className="text-xs text-slate-300 font-mono line-clamp-2 group-hover:text-white mb-2 transition-colors">
-                                        {item.prompt}
-                                    </p>
-                                    <div className="flex justify-between items-center">
-                                        <span className="text-[10px] text-slate-500">
-                                            {formatDate(item.timestamp)}
-                                        </span>
-                                        {item.seed !== undefined && (
-                                            <span className="text-[10px] text-slate-500 flex items-center gap-0.5" title={`Seed: ${item.seed}`}>
-                                                <Hash size={8} /> {item.seed.toString().slice(0,4)}...
-                                            </span>
-                                        )}
+                                    <p className="text-xs text-slate-300 font-mono line-clamp-2 mb-1">{item.prompt}</p>
+                                    <div className="flex justify-between items-center text-[10px] text-slate-500">
+                                        <span>{formatDate(item.timestamp)}</span>
+                                        {item.seed !== undefined && <span>Seed: {item.seed.toString().slice(0,4)}...</span>}
                                     </div>
                                 </div>
                             </div>

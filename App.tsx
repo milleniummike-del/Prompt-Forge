@@ -3,16 +3,29 @@ import { BlockLibrary } from './components/BlockLibrary';
 import { PromptCanvas } from './components/PromptCanvas';
 import { BlockModal } from './components/BlockModal';
 import { AnalysisModal } from './components/AnalysisModal';
-import { PromptBlock, BlockFormData, GeneratedImage } from './types';
-import { getBlocks, saveBlock, updateBlock, deleteBlock, saveHistory, saveImageToHistory } from './services/storage';
+import { LandingPage } from './components/LandingPage';
+import { PromptBlock, BlockFormData, GeneratedImage, GoogleUser } from './types';
+import { getBlocks, saveBlock, updateBlock, deleteBlock, saveHistory, saveImageToHistory, exportData, importData, STORAGE_MODE } from './services/storage';
 import { enhancePrompt, generateImagePreview, analyzePromptForBlocks } from './services/gemini';
 import { Menu } from 'lucide-react';
+
+// Helper to decode JWT from Google
+const parseJwt = (token: string) => {
+  try {
+    return JSON.parse(atob(token.split('.')[1]));
+  } catch (e) {
+    return null;
+  }
+};
 
 const App: React.FC = () => {
   // State
   const [blocks, setBlocks] = useState<PromptBlock[]>([]);
   const [prompt, setPrompt] = useState<string>('');
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
+  
+  // User State - Initialize as null (logged out)
+  const [user, setUser] = useState<GoogleUser | null>(null);
   
   // Modal States
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -31,14 +44,83 @@ const App: React.FC = () => {
   // Mobile Menu State
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  // Load initial data
+  // Initialize Google Sign-In
   useEffect(() => {
-    const fetchBlocks = async () => {
-      const data = await getBlocks();
-      setBlocks(data);
+    // Check if Google script is loaded
+    const initializeGoogle = () => {
+      if (window.google && window.google.accounts) {
+        window.google.accounts.id.initialize({
+          client_id: process.env.GOOGLE_CLIENT_ID || 'YOUR_CLIENT_ID_HERE', 
+          auto_select: false, // Ensure user is logged out by default (no auto-signin)
+          callback: (response: any) => {
+            const profile = parseJwt(response.credential);
+            if (profile) {
+              setUser({
+                name: profile.name,
+                email: profile.email,
+                picture: profile.picture,
+                sub: profile.sub
+              });
+            }
+          }
+        });
+        
+        // If we are on the landing page (no user), render the button there
+        if (!user) {
+            const btnContainer = document.getElementById('google-btn-landing');
+            if (btnContainer) {
+                window.google.accounts.id.renderButton(
+                    btnContainer,
+                    { theme: 'filled_black', size: 'large', shape: 'pill', text: 'signin_with' }
+                );
+            }
+        }
+      }
     };
-    fetchBlocks();
-  }, []);
+
+    // If script is already present
+    if (window.google) {
+      initializeGoogle();
+    } else {
+      const interval = setInterval(() => {
+        if (window.google) {
+          initializeGoogle();
+          clearInterval(interval);
+        }
+      }, 500);
+      return () => clearInterval(interval);
+    }
+  }, [user]); // Re-run when user state changes (logout -> re-render button)
+
+  const handleLogout = () => {
+    // Disable auto-select to prevent immediate re-login if they refresh
+    if (window.google && window.google.accounts) {
+      window.google.accounts.id.disableAutoSelect();
+    }
+    // Clear application state
+    setUser(null);
+  };
+
+  const handleMockLogin = () => {
+    setUser({
+      name: "Test User",
+      email: "test@example.com",
+      picture: "https://ui-avatars.com/api/?name=Test+User&background=6366f1&color=fff",
+      sub: "mock-123"
+    });
+  };
+
+  // Load initial data
+  const loadBlocks = async () => {
+    const data = await getBlocks();
+    setBlocks(data);
+  };
+
+  useEffect(() => {
+    if (user) {
+        loadBlocks();
+    }
+  }, [user]);
 
   // Compute unique tags for Folder/Group suggestions
   const availableTags = useMemo(() => {
@@ -55,6 +137,42 @@ const App: React.FC = () => {
 
     return () => clearTimeout(timeoutId);
   }, [prompt]);
+
+  // Data Management Handlers (Export/Import)
+  const handleExport = async () => {
+      try {
+          const json = await exportData();
+          const blob = new Blob([json], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `promptforge-backup-${new Date().toISOString().split('T')[0]}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+      } catch (e: any) {
+          alert(e.message || "Failed to export data");
+      }
+  };
+
+  const handleImport = async (file: File) => {
+      if (!window.confirm("Importing will overwrite current data. Continue?")) return;
+      
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+          try {
+              const json = e.target?.result as string;
+              await importData(json);
+              await loadBlocks(); // Refresh blocks from new storage
+              alert("Data imported successfully!");
+              // Note: History/Images panels refresh themselves when opened
+          } catch (e: any) {
+              alert(e.message || "Failed to import data. Check file format.");
+          }
+      };
+      reader.readAsText(file);
+  };
 
   // CRUD Handlers
   const handleSaveBlock = async (data: BlockFormData) => {
@@ -141,7 +259,7 @@ const App: React.FC = () => {
       if (regex.test(prev)) {
         // Remove the segment
         // Logic: Identify if we are removing from start, middle, or end to handle commas correctly
-        let newPrompt = prev.replace(regex, (_match, p1, p2) => {
+        let newPrompt = prev.replace(regex, (match, p1, p2) => {
           // If flanked by commas (middle of list), keep one comma
           if (p1 && p1.includes(',') && p2 && p2.includes(',')) {
             return ', ';
@@ -231,6 +349,14 @@ const App: React.FC = () => {
     }
   };
 
+  // --- RENDER ---
+
+  // 1. Landing Page (Logged Out)
+  if (!user) {
+      return <LandingPage onMockLogin={handleMockLogin} />;
+  }
+
+  // 2. Main App (Logged In)
   return (
     <div className="flex h-screen w-full bg-slate-950 text-slate-200 overflow-hidden font-sans">
       
@@ -255,6 +381,8 @@ const App: React.FC = () => {
           onDelete={handleDeleteBlock}
           onAddNew={handleAddNew}
           onClose={() => setIsSidebarOpen(false)}
+          onExport={STORAGE_MODE === 'LOCAL' ? handleExport : undefined}
+          onImport={STORAGE_MODE === 'LOCAL' ? handleImport : undefined}
         />
       </div>
 
@@ -285,6 +413,9 @@ const App: React.FC = () => {
           isAnalyzing={isAnalyzing}
           generatedImage={generatedImage}
           setGeneratedImage={setGeneratedImage}
+          user={user}
+          onLogout={handleLogout}
+          onMockLogin={handleMockLogin}
         />
       </div>
 

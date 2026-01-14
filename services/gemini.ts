@@ -1,16 +1,62 @@
 import { GoogleGenAI, Type } from "@google/genai";
+import { incrementTokenUsage } from "./storage";
 
-declare const process: any;
+// ==========================================
+// GEMINI API CONFIGURATION
+// ==========================================
+// 'DIRECT' - Use GoogleGenAI SDK in browser (requires API Key in frontend)
+// 'PROXY'  - Use PHP Backend Broker (api/index.php?endpoint=gemini)
+// Toggle via environment variable
+export const GEMINI_MODE: 'DIRECT' | 'PROXY' = (process.env.GEMINI_MODE === 'PROXY') ? 'PROXY' : 'DIRECT';
 
-// Initialize Gemini Client
-// WARNING: In a production app, never expose API keys on the client side.
-// This is for demonstration using the user's local environment key.
-const apiKey = process.env.API_KEY || '';
-const ai = new GoogleGenAI({ apiKey });
+const PROXY_URL = 'https://artificialfiretiger.com/promptforgeapi?endpoint=gemini';
+
+// Initialize Gemini Client (Only needed for DIRECT mode)
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+// --- Helper for Proxy Calls ---
+const callProxy = async (action: string, payload: any) => {
+    try {
+        const response = await fetch(PROXY_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action, ...payload })
+        });
+        
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`Proxy Error: ${errText}`);
+        }
+
+        const data = await response.json();
+        if (data.error) throw new Error(data.error);
+
+        // Track tokens from proxy response
+        if (data.usage) {
+            incrementTokenUsage(data.usage.promptTokenCount || 0, data.usage.candidatesTokenCount || 0);
+        }
+
+        return data;
+    } catch (e) {
+        console.error("Gemini Proxy Call Failed:", e);
+        throw e;
+    }
+};
 
 export const enhancePrompt = async (currentPrompt: string, referenceImageBase64?: string): Promise<string> => {
-  if (!apiKey) throw new Error("API Key is missing");
   if (!currentPrompt.trim() && !referenceImageBase64) return "";
+
+  // --- PROXY MODE ---
+  if (GEMINI_MODE === 'PROXY') {
+      const data = await callProxy('enhance', {
+          prompt: currentPrompt,
+          image: referenceImageBase64
+      });
+      return data.text || currentPrompt;
+  }
+
+  // --- DIRECT MODE ---
+  if (!process.env.API_KEY) throw new Error("API Key is missing");
 
   try {
     const parts: any[] = [];
@@ -45,6 +91,10 @@ export const enhancePrompt = async (currentPrompt: string, referenceImageBase64?
       }
     });
 
+    if (response.usageMetadata) {
+        incrementTokenUsage(response.usageMetadata.promptTokenCount || 0, response.usageMetadata.candidatesTokenCount || 0);
+    }
+
     return response.text?.trim() || currentPrompt;
   } catch (error) {
     console.error("Enhancement failed:", error);
@@ -53,12 +103,23 @@ export const enhancePrompt = async (currentPrompt: string, referenceImageBase64?
 };
 
 export const generateImagePreview = async (prompt: string, referenceImageBase64?: string, seed?: number): Promise<string> => {
-    if (!apiKey) throw new Error("API Key is missing");
+    
+    // --- PROXY MODE ---
+    if (GEMINI_MODE === 'PROXY') {
+        const data = await callProxy('generate', {
+            prompt,
+            image: referenceImageBase64,
+            seed
+        });
+        return data.url;
+    }
+
+    // --- DIRECT MODE ---
+    if (!process.env.API_KEY) throw new Error("API Key is missing");
     
     try {
         const parts: any[] = [];
 
-        // If we have a reference image, include it for image-to-image or multimodal editing
         if (referenceImageBase64) {
             const match = referenceImageBase64.match(/^data:(.*?);base64,(.*)$/);
             if (match) {
@@ -78,8 +139,6 @@ export const generateImagePreview = async (prompt: string, referenceImageBase64?
             config.seed = seed;
         }
 
-        // Using gemini-2.5-flash-image for fast previews as requested by guidelines for "general image generation"
-        // unless high quality is specifically requested, but for a "preview" feature in a manager, speed is key.
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash-image',
             contents: {
@@ -87,6 +146,10 @@ export const generateImagePreview = async (prompt: string, referenceImageBase64?
             },
             config: config
         });
+
+        if (response.usageMetadata) {
+            incrementTokenUsage(response.usageMetadata.promptTokenCount || 0, response.usageMetadata.candidatesTokenCount || 0);
+        }
 
         // Extract image
         for (const part of response.candidates?.[0]?.content?.parts || []) {
@@ -103,7 +166,20 @@ export const generateImagePreview = async (prompt: string, referenceImageBase64?
 }
 
 export const analyzePromptForBlocks = async (prompt: string): Promise<any[]> => {
-    if (!apiKey) throw new Error("API Key is missing");
+    
+    // --- PROXY MODE ---
+    if (GEMINI_MODE === 'PROXY') {
+        const data = await callProxy('analyze', { prompt });
+        try {
+            return JSON.parse(data.json);
+        } catch (e) {
+            console.error("Failed to parse analysis JSON from proxy", e);
+            return [];
+        }
+    }
+
+    // --- DIRECT MODE ---
+    if (!process.env.API_KEY) throw new Error("API Key is missing");
     
     try {
         const response = await ai.models.generateContent({
@@ -140,10 +216,14 @@ export const analyzePromptForBlocks = async (prompt: string): Promise<any[]> => 
                 }
             }
         });
+
+        if (response.usageMetadata) {
+            incrementTokenUsage(response.usageMetadata.promptTokenCount || 0, response.usageMetadata.candidatesTokenCount || 0);
+        }
   
         return JSON.parse(response.text || '[]');
     } catch (e) {
         console.error("Analysis failed", e);
         throw e;
     }
-  }
+}

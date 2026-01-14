@@ -1,3 +1,4 @@
+
 <?php
 // RENAME THIS FILE TO: index.php
 
@@ -13,7 +14,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-// 3. Database Connection
+// 3. Database Connection & Config
 if (!file_exists('config.php')) {
     http_response_code(500);
     echo json_encode(['error' => 'Missing config.php. Please rename config.txt to config.php']);
@@ -21,10 +22,9 @@ if (!file_exists('config.php')) {
 }
 $pdo = require_once 'config.php';
 
-// 4. Parameter-Based Routing Logic
-// Request format: /api/?endpoint=blocks&id=1
+// 4. Router Logic using Query Parameters
 $endpoint = isset($_GET['endpoint']) ? $_GET['endpoint'] : '';
-$resourceId = isset($_GET['id']) ? $_GET['id'] : null;
+$id = isset($_GET['id']) ? $_GET['id'] : null;
 
 // Helper to cast ID to string for JS compatibility
 function mapTypes($row) {
@@ -35,117 +35,301 @@ function mapTypes($row) {
     return $row;
 }
 
+// Helper for Gemini cURL calls
+function callGemini($url, $payload) {
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    
+    if (curl_errno($ch)) {
+        throw new Exception(curl_error($ch));
+    }
+    curl_close($ch);
+    
+    if ($httpCode >= 400) {
+        throw new Exception("Gemini API Error ($httpCode): " . $response);
+    }
+    
+    return json_decode($response, true);
+}
+
 // Get Request Body
 $input = json_decode(file_get_contents('php://input'), true);
 $method = $_SERVER['REQUEST_METHOD'];
 
 try {
-    switch ($endpoint) {
-        // --- BLOCKS ---
-        case 'blocks':
-            if ($method === 'GET') {
-                $stmt = $pdo->query("SELECT * FROM prompt_blocks ORDER BY createdAt DESC");
-                $rows = $stmt->fetchAll();
-                echo json_encode(array_map('mapTypes', $rows));
-            } 
-            elseif ($method === 'POST') {
-                $stmt = $pdo->prepare("INSERT INTO prompt_blocks (title, content, tag, subTag, createdAt) VALUES (?, ?, ?, ?, ?)");
-                $createdAt = round(microtime(true) * 1000); // JS timestamp (ms)
-                $subTag = isset($input['subTag']) ? $input['subTag'] : '';
-                $stmt->execute([$input['title'], $input['content'], $input['tag'], $subTag, $createdAt]);
+    // Default Route
+    if (empty($endpoint)) {
+        echo json_encode(["message" => "API is working. Use ?endpoint=blocks to fetch data.", "status" => "ok"]);
+        exit;
+    }
+
+    // --- BLOCKS ---
+    if ($endpoint === 'blocks') {
+        if ($method === 'GET') {
+            $stmt = $pdo->query("SELECT * FROM prompt_blocks ORDER BY createdAt DESC");
+            $rows = $stmt->fetchAll();
+            echo json_encode(array_map('mapTypes', $rows));
+        } 
+        elseif ($method === 'POST') {
+            $stmt = $pdo->prepare("INSERT INTO prompt_blocks (title, content, tag, subTag, createdAt) VALUES (?, ?, ?, ?, ?)");
+            $createdAt = round(microtime(true) * 1000); // JS timestamp (ms)
+            $subTag = isset($input['subTag']) ? $input['subTag'] : '';
+            $stmt->execute([$input['title'], $input['content'], $input['tag'], $subTag, $createdAt]);
+            
+            $input['id'] = (string)$pdo->lastInsertId();
+            $input['createdAt'] = $createdAt;
+            echo json_encode($input);
+        }
+        elseif ($method === 'PUT' && $id) {
+            $stmt = $pdo->prepare("UPDATE prompt_blocks SET title=?, content=?, tag=?, subTag=? WHERE id=?");
+            $subTag = isset($input['subTag']) ? $input['subTag'] : '';
+            $stmt->execute([$input['title'], $input['content'], $input['tag'], $subTag, $id]);
+            
+            // Return updated
+            $stmt = $pdo->prepare("SELECT * FROM prompt_blocks WHERE id=?");
+            $stmt->execute([$id]);
+            echo json_encode(mapTypes($stmt->fetch()));
+        }
+        elseif ($method === 'DELETE' && $id) {
+            $stmt = $pdo->prepare("DELETE FROM prompt_blocks WHERE id=?");
+            $stmt->execute([$id]);
+            echo json_encode(['success' => true]);
+        }
+    }
+
+    // --- HISTORY ---
+    elseif ($endpoint === 'history') {
+        if ($method === 'GET') {
+            $stmt = $pdo->query("SELECT content FROM prompt_history ORDER BY id DESC LIMIT 50");
+            echo json_encode($stmt->fetchAll());
+        }
+        elseif ($method === 'POST') {
+            $stmt = $pdo->prepare("INSERT INTO prompt_history (content) VALUES (?)");
+            $stmt->execute([$input['content']]);
+            echo json_encode(['success' => true]);
+        }
+        elseif ($method === 'DELETE') {
+            $pdo->exec("TRUNCATE TABLE prompt_history");
+            echo json_encode(['success' => true]);
+        }
+    }
+
+    // --- IMAGES ---
+    elseif ($endpoint === 'images') {
+        if ($method === 'GET') {
+            $stmt = $pdo->query("SELECT * FROM generated_images ORDER BY timestamp DESC LIMIT 20");
+            $rows = $stmt->fetchAll();
+            echo json_encode(array_map('mapTypes', $rows));
+        }
+        elseif ($method === 'POST') {
+            $stmt = $pdo->prepare("INSERT INTO generated_images (url, prompt, timestamp, seed) VALUES (?, ?, ?, ?)");
+            $stmt->execute([$input['url'], $input['prompt'], $input['timestamp'], $input['seed']]);
+            echo json_encode(['success' => true]);
+        }
+        elseif ($method === 'DELETE') {
+            $pdo->exec("TRUNCATE TABLE generated_images");
+            echo json_encode(['success' => true]);
+        }
+    }
+
+    // --- SAVED IMAGES ---
+    elseif ($endpoint === 'saved-images') {
+        if ($method === 'GET') {
+            $stmt = $pdo->query("SELECT * FROM saved_images ORDER BY timestamp DESC");
+            $rows = $stmt->fetchAll();
+            echo json_encode(array_map('mapTypes', $rows));
+        }
+        elseif ($method === 'POST') {
+            $stmt = $pdo->prepare("INSERT INTO saved_images (url, prompt, timestamp, seed) VALUES (?, ?, ?, ?)");
+            $stmt->execute([$input['url'], $input['prompt'], $input['timestamp'], $input['seed']]);
+            echo json_encode(['id' => (string)$pdo->lastInsertId(), 'success' => true]);
+        }
+        elseif ($method === 'DELETE' && $id) {
+            $stmt = $pdo->prepare("DELETE FROM saved_images WHERE id=?");
+            $stmt->execute([$id]);
+            echo json_encode(['success' => true]);
+        }
+        elseif ($method === 'DELETE') {
+            $pdo->exec("TRUNCATE TABLE saved_images");
+            echo json_encode(['success' => true]);
+        }
+    }
+
+    // --- SAVED PROMPTS ---
+    elseif ($endpoint === 'saved-prompts') {
+        if ($method === 'GET') {
+            $stmt = $pdo->query("SELECT * FROM saved_prompts ORDER BY timestamp DESC");
+            $rows = $stmt->fetchAll();
+            echo json_encode(array_map('mapTypes', $rows));
+        }
+        elseif ($method === 'POST') {
+            $stmt = $pdo->prepare("INSERT INTO saved_prompts (content, timestamp) VALUES (?, ?)");
+            $timestamp = round(microtime(true) * 1000);
+            $stmt->execute([$input['content'], $timestamp]);
+            echo json_encode(['id' => (string)$pdo->lastInsertId(), 'content' => $input['content'], 'timestamp' => $timestamp]);
+        }
+        elseif ($method === 'DELETE' && $id) {
+            $stmt = $pdo->prepare("DELETE FROM saved_prompts WHERE id=?");
+            $stmt->execute([$id]);
+            echo json_encode(['success' => true]);
+        }
+        elseif ($method === 'DELETE') {
+            $pdo->exec("TRUNCATE TABLE saved_prompts");
+            echo json_encode(['success' => true]);
+        }
+    }
+
+    // --- GEMINI PROXY ---
+    elseif ($endpoint === 'gemini') {
+        $apiKey = getenv('API_KEY'); 
+        if (!$apiKey) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Server API Key is missing. Set API_KEY env var.']);
+            exit;
+        }
+
+        $baseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
+        $action = $input['action'] ?? '';
+
+        switch ($action) {
+            case 'enhance':
+                // Model: gemini-2.5-flash
+                $prompt = $input['prompt'] ?? '';
+                $image = $input['image'] ?? null;
                 
-                $input['id'] = (string)$pdo->lastInsertId();
-                $input['createdAt'] = $createdAt;
-                echo json_encode($input);
-            }
-            elseif ($method === 'PUT' && $resourceId) {
-                $stmt = $pdo->prepare("UPDATE prompt_blocks SET title=?, content=?, tag=?, subTag=? WHERE id=?");
-                $subTag = isset($input['subTag']) ? $input['subTag'] : '';
-                $stmt->execute([$input['title'], $input['content'], $input['tag'], $subTag, $resourceId]);
+                $parts = [];
+                if ($image) {
+                    if (preg_match('/^data:(.*?);base64,(.*)$/', $image, $matches)) {
+                        $parts[] = [
+                            'inline_data' => [
+                                'mime_type' => $matches[1],
+                                'data' => $matches[2]
+                            ]
+                        ];
+                    }
+                }
+                $instructions = "You are an expert AI art prompt engineer. Optimize the following prompt. Keep it comma-separated or fluid natural language. RETURN ONLY THE ENHANCED PROMPT TEXT. NO EXPLANATIONS.\n\nOriginal Prompt: \"$prompt\"";
+                $parts[] = ['text' => $instructions];
                 
-                // Return updated
-                $stmt = $pdo->prepare("SELECT * FROM prompt_blocks WHERE id=?");
-                $stmt->execute([$resourceId]);
-                echo json_encode(mapTypes($stmt->fetch()));
-            }
-            elseif ($method === 'DELETE' && $resourceId) {
-                $stmt = $pdo->prepare("DELETE FROM prompt_blocks WHERE id=?");
-                $stmt->execute([$resourceId]);
-                echo json_encode(['success' => true]);
-            }
-            break;
-
-        // --- HISTORY ---
-        case 'history':
-            if ($method === 'GET') {
-                $stmt = $pdo->query("SELECT content FROM prompt_history ORDER BY id DESC LIMIT 50");
-                echo json_encode($stmt->fetchAll());
-            }
-            elseif ($method === 'POST') {
-                $stmt = $pdo->prepare("INSERT INTO prompt_history (content) VALUES (?)");
-                $stmt->execute([$input['content']]);
-                echo json_encode(['success' => true]);
-            }
-            elseif ($method === 'DELETE') {
-                $pdo->exec("TRUNCATE TABLE prompt_history");
-                echo json_encode(['success' => true]);
-            }
-            break;
-
-        // --- IMAGES ---
-        case 'images':
-            if ($method === 'GET') {
-                $stmt = $pdo->query("SELECT * FROM generated_images ORDER BY timestamp DESC LIMIT 20");
-                $rows = $stmt->fetchAll();
-                echo json_encode(array_map('mapTypes', $rows));
-            }
-            elseif ($method === 'POST') {
-                $stmt = $pdo->prepare("INSERT INTO generated_images (url, prompt, timestamp, seed) VALUES (?, ?, ?, ?)");
-                $stmt->execute([$input['url'], $input['prompt'], $input['timestamp'], $input['seed']]);
-                echo json_encode(['success' => true]);
-            }
-            elseif ($method === 'DELETE') {
-                $pdo->exec("TRUNCATE TABLE generated_images");
-                echo json_encode(['success' => true]);
-            }
-            break;
-
-        // --- SAVED PROMPTS ---
-        case 'saved-prompts':
-            if ($method === 'GET') {
-                $stmt = $pdo->query("SELECT * FROM saved_prompts ORDER BY timestamp DESC");
-                $rows = $stmt->fetchAll();
-                echo json_encode(array_map('mapTypes', $rows));
-            }
-            elseif ($method === 'POST') {
-                $stmt = $pdo->prepare("INSERT INTO saved_prompts (content, timestamp) VALUES (?, ?)");
-                $timestamp = round(microtime(true) * 1000);
-                $stmt->execute([$input['content'], $timestamp]);
-                echo json_encode(['id' => (string)$pdo->lastInsertId(), 'content' => $input['content'], 'timestamp' => $timestamp]);
-            }
-            elseif ($method === 'DELETE' && $resourceId) {
-                $stmt = $pdo->prepare("DELETE FROM saved_prompts WHERE id=?");
-                $stmt->execute([$resourceId]);
-                echo json_encode(['success' => true]);
-            }
-            elseif ($method === 'DELETE') {
-                $pdo->exec("TRUNCATE TABLE saved_prompts");
-                echo json_encode(['success' => true]);
-            }
-            break;
-
-        default:
-            // No endpoint specified or unknown endpoint
-            if (empty($endpoint)) {
-                echo json_encode([
-                    'message' => 'API is working. Use ?endpoint=blocks to fetch data.',
-                    'status' => 'ok'
-                ]);
-            } else {
-                http_response_code(404);
-                echo json_encode(['error' => 'Endpoint not found', 'endpoint' => $endpoint]);
-            }
-            break;
+                $payload = [
+                    'contents' => [['parts' => $parts]],
+                    'generationConfig' => ['temperature' => 0.7]
+                ];
+                
+                $url = $baseUrl . "gemini-2.5-flash:generateContent?key=" . $apiKey;
+                $result = callGemini($url, $payload);
+                
+                $text = $result['candidates'][0]['content']['parts'][0]['text'] ?? $prompt;
+                $usage = $result['usageMetadata'] ?? null;
+                
+                echo json_encode(['text' => trim($text), 'usage' => $usage]);
+                break;
+    
+            case 'generate':
+                // Model: gemini-2.5-flash-image
+                $prompt = $input['prompt'] ?? '';
+                $image = $input['image'] ?? null;
+                $seed = $input['seed'] ?? null;
+                
+                $parts = [];
+                if ($image) {
+                    if (preg_match('/^data:(.*?);base64,(.*)$/', $image, $matches)) {
+                        $parts[] = [
+                            'inline_data' => [
+                                'mime_type' => $matches[1],
+                                'data' => $matches[2]
+                            ]
+                        ];
+                    }
+                }
+                $parts[] = ['text' => $prompt];
+                
+                $config = [];
+                if ($seed !== null) $config['seed'] = $seed;
+                
+                $payload = [
+                    'contents' => [['parts' => $parts]],
+                    'generationConfig' => $config
+                ];
+                
+                $url = $baseUrl . "gemini-2.5-flash-image:generateContent?key=" . $apiKey;
+                $result = callGemini($url, $payload);
+                
+                // Extract image data
+                $imageData = null;
+                $parts = $result['candidates'][0]['content']['parts'] ?? [];
+                foreach ($parts as $part) {
+                    if (isset($part['inline_data'])) {
+                        $mime = $part['inline_data']['mime_type'];
+                        $data = $part['inline_data']['data'];
+                        $imageData = "data:$mime;base64,$data";
+                        break;
+                    }
+                }
+                
+                if (!$imageData) throw new Exception("No image returned from Gemini");
+                
+                $usage = $result['usageMetadata'] ?? null;
+                echo json_encode(['url' => $imageData, 'usage' => $usage]);
+                break;
+    
+            case 'analyze':
+                // Model: gemini-2.5-flash (with JSON Schema)
+                $prompt = $input['prompt'] ?? '';
+                
+                $instructions = "Analyze the art prompt below. Break it down into reusable modular blocks (Title, Content, Tag, SubTag). Return JSON.";
+                
+                $payload = [
+                    'contents' => [
+                        [
+                            'parts' => [
+                                ['text' => $instructions . "\nPrompt: " . $prompt]
+                            ]
+                        ]
+                    ],
+                    'generationConfig' => [
+                        'response_mime_type' => 'application/json',
+                        'response_schema' => [
+                            'type' => 'ARRAY',
+                            'items' => [
+                                'type' => 'OBJECT',
+                                'properties' => [
+                                    'title' => ['type' => 'STRING'],
+                                    'content' => ['type' => 'STRING'],
+                                    'tag' => ['type' => 'STRING'],
+                                    'subTag' => ['type' => 'STRING']
+                                ],
+                                'required' => ['title', 'content', 'tag']
+                            ]
+                        ]
+                    ]
+                ];
+                
+                $url = $baseUrl . "gemini-2.5-flash:generateContent?key=" . $apiKey;
+                $result = callGemini($url, $payload);
+                
+                $text = $result['candidates'][0]['content']['parts'][0]['text'] ?? '[]';
+                $usage = $result['usageMetadata'] ?? null;
+                
+                echo json_encode(['json' => $text, 'usage' => $usage]);
+                break;
+    
+            default:
+                http_response_code(400);
+                echo json_encode(['error' => 'Invalid action']);
+        }
+    }
+    
+    // Fallback if endpoint didn't match
+    else {
+        http_response_code(404);
+        echo json_encode(['error' => 'Endpoint not found']);
     }
 
 } catch (Exception $e) {

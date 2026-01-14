@@ -1,0 +1,200 @@
+<?php
+// RENAME THIS FILE TO: gemini.php
+
+// 1. CORS Headers
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Content-Type: application/json; charset=UTF-8");
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
+
+// 2. Configuration
+// Get API Key from Server Environment
+$apiKey = getenv('API_KEY'); 
+
+// Fallback for local testing if env var isn't set (DO NOT COMMIT REAL KEYS)
+if (!$apiKey) {
+    // $apiKey = 'YOUR_API_KEY_HERE'; 
+}
+
+if (!$apiKey) {
+    http_response_code(500);
+    echo json_encode(['error' => 'Server API Key is missing. Set API_KEY env var.']);
+    exit;
+}
+
+$baseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
+
+// 3. Helper function for cURL
+function callGemini($url, $payload) {
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    
+    if (curl_errno($ch)) {
+        throw new Exception(curl_error($ch));
+    }
+    curl_close($ch);
+    
+    if ($httpCode >= 400) {
+        throw new Exception("Gemini API Error ($httpCode): " . $response);
+    }
+    
+    return json_decode($response, true);
+}
+
+// 4. Handle Request
+$input = json_decode(file_get_contents('php://input'), true);
+$action = $input['action'] ?? '';
+
+try {
+    switch ($action) {
+        case 'enhance':
+            // Model: gemini-2.5-flash
+            $prompt = $input['prompt'] ?? '';
+            $image = $input['image'] ?? null;
+            
+            $contents = [];
+            $parts = [];
+            
+            // Handle optional image (Multimodal)
+            if ($image) {
+                if (preg_match('/^data:(.*?);base64,(.*)$/', $image, $matches)) {
+                    $parts[] = [
+                        'inline_data' => [
+                            'mime_type' => $matches[1],
+                            'data' => $matches[2]
+                        ]
+                    ];
+                }
+            }
+            
+            // System instructions usually go in config, but we'll embed guidance in prompt for REST simplicity
+            // or use system_instruction field if using the latest beta API.
+            // For simplicity here, we append to parts.
+            $instructions = "You are an expert AI art prompt engineer. Optimize the following prompt. Keep it comma-separated or fluid natural language. RETURN ONLY THE ENHANCED PROMPT TEXT. NO EXPLANATIONS.\n\nOriginal Prompt: \"$prompt\"";
+            
+            $parts[] = ['text' => $instructions];
+            
+            $payload = [
+                'contents' => [['parts' => $parts]],
+                'generationConfig' => ['temperature' => 0.7]
+            ];
+            
+            $url = $baseUrl . "gemini-2.5-flash:generateContent?key=" . $apiKey;
+            $result = callGemini($url, $payload);
+            
+            $text = $result['candidates'][0]['content']['parts'][0]['text'] ?? $prompt;
+            $usage = $result['usageMetadata'] ?? null;
+            
+            echo json_encode(['text' => trim($text), 'usage' => $usage]);
+            break;
+
+        case 'generate':
+            // Model: gemini-2.5-flash-image
+            $prompt = $input['prompt'] ?? '';
+            $image = $input['image'] ?? null;
+            $seed = $input['seed'] ?? null;
+            
+            $parts = [];
+            if ($image) {
+                if (preg_match('/^data:(.*?);base64,(.*)$/', $image, $matches)) {
+                    $parts[] = [
+                        'inline_data' => [
+                            'mime_type' => $matches[1],
+                            'data' => $matches[2]
+                        ]
+                    ];
+                }
+            }
+            $parts[] = ['text' => $prompt];
+            
+            $config = [];
+            if ($seed !== null) $config['seed'] = $seed;
+            
+            $payload = [
+                'contents' => [['parts' => $parts]],
+                'generationConfig' => $config
+            ];
+            
+            $url = $baseUrl . "gemini-2.5-flash-image:generateContent?key=" . $apiKey;
+            $result = callGemini($url, $payload);
+            
+            // Extract image data
+            $imageData = null;
+            $parts = $result['candidates'][0]['content']['parts'] ?? [];
+            foreach ($parts as $part) {
+                if (isset($part['inline_data'])) {
+                    $mime = $part['inline_data']['mime_type'];
+                    $data = $part['inline_data']['data'];
+                    $imageData = "data:$mime;base64,$data";
+                    break;
+                }
+            }
+            
+            if (!$imageData) throw new Exception("No image returned from Gemini");
+            
+            $usage = $result['usageMetadata'] ?? null;
+            echo json_encode(['url' => $imageData, 'usage' => $usage]);
+            break;
+
+        case 'analyze':
+            // Model: gemini-2.5-flash (with JSON Schema)
+            $prompt = $input['prompt'] ?? '';
+            
+            $instructions = "Analyze the art prompt below. Break it down into reusable modular blocks (Title, Content, Tag, SubTag). Return JSON.";
+            
+            $payload = [
+                'contents' => [
+                    [
+                        'parts' => [
+                            ['text' => $instructions . "\nPrompt: " . $prompt]
+                        ]
+                    ]
+                ],
+                'generationConfig' => [
+                    'response_mime_type' => 'application/json',
+                    'response_schema' => [
+                        'type' => 'ARRAY',
+                        'items' => [
+                            'type' => 'OBJECT',
+                            'properties' => [
+                                'title' => ['type' => 'STRING'],
+                                'content' => ['type' => 'STRING'],
+                                'tag' => ['type' => 'STRING'],
+                                'subTag' => ['type' => 'STRING']
+                            ],
+                            'required' => ['title', 'content', 'tag']
+                        ]
+                    ]
+                ]
+            ];
+            
+            $url = $baseUrl . "gemini-2.5-flash:generateContent?key=" . $apiKey;
+            $result = callGemini($url, $payload);
+            
+            $text = $result['candidates'][0]['content']['parts'][0]['text'] ?? '[]';
+            $usage = $result['usageMetadata'] ?? null;
+            
+            echo json_encode(['json' => $text, 'usage' => $usage]);
+            break;
+
+        default:
+            http_response_code(400);
+            echo json_encode(['error' => 'Invalid action']);
+    }
+
+} catch (Exception $e) {
+    http_response_code(500);
+    echo json_encode(['error' => $e->getMessage()]);
+}
+?>

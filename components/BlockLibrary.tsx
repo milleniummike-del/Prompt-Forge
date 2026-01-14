@@ -1,6 +1,6 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { PromptBlock } from '../types';
-import { Plus, Search, Trash2, Edit2, Check, X, Folder, FolderOpen, ChevronRight, ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { Plus, Search, Trash2, Edit2, Check, X, Folder, FolderOpen, ChevronRight, ChevronDown, SlidersHorizontal, Download, Upload } from 'lucide-react';
 
 interface BlockLibraryProps {
   blocks: PromptBlock[];
@@ -10,6 +10,8 @@ interface BlockLibraryProps {
   onDelete: (id: string) => void;
   onAddNew: () => void;
   onClose?: () => void;
+  onExport?: () => void;
+  onImport?: (file: File) => void;
 }
 
 export const BlockLibrary: React.FC<BlockLibraryProps> = ({
@@ -20,10 +22,13 @@ export const BlockLibrary: React.FC<BlockLibraryProps> = ({
   onDelete,
   onAddNew,
   onClose,
+  onExport,
+  onImport
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Group blocks by tag
   const groupedBlocks = useMemo(() => {
@@ -66,6 +71,15 @@ export const BlockLibrary: React.FC<BlockLibraryProps> = ({
     });
   };
 
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && onImport) {
+        onImport(file);
+    }
+    // Reset so the same file can be selected again
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   const filteredBlocks = useMemo(() => {
     // If no search and no specific tag filter, return null to trigger Folder View
     if (!searchTerm && !selectedTag) return null;
@@ -90,11 +104,9 @@ export const BlockLibrary: React.FC<BlockLibraryProps> = ({
   }, [blocks, searchTerm, selectedTag]);
 
   // Helper to check if block is active using Regex for strict exact matching
-  // This handles "Rain" vs "Rainbow" and blocks containing commas like "A, B"
   const checkIsActive = (prompt: string, content: string) => {
     if (!content.trim()) return false;
     const escapedContent = content.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Match content surrounded by: Start-of-string OR comma-separator ... AND ... comma-separator OR End-of-string
     const regex = new RegExp(`(^|,\\s*)${escapedContent}(,\\s*|$)`, 'i');
     return regex.test(prompt);
   };
@@ -307,6 +319,35 @@ export const BlockLibrary: React.FC<BlockLibraryProps> = ({
             )
         )}
       </div>
+
+      {/* Footer / Data Management */}
+      {(onExport && onImport) && (
+          <div className="p-4 border-t border-slate-800 bg-slate-900 sticky bottom-0 z-10 flex gap-2">
+              <input 
+                  type="file" 
+                  ref={fileInputRef}
+                  className="hidden" 
+                  accept=".json" 
+                  onChange={handleFileChange} 
+              />
+              <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-800 hover:border-slate-700 transition-all"
+                  title="Import Backup"
+              >
+                  <Upload size={14} />
+                  Import
+              </button>
+              <button
+                  onClick={onExport}
+                  className="flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-800 hover:border-slate-700 transition-all"
+                  title="Export Backup"
+              >
+                  <Download size={14} />
+                  Export
+              </button>
+          </div>
+      )}
     </div>
   );
 };

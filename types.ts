@@ -1,3 +1,4 @@
+
 export interface PromptBlock {
   id: string;
   title: string;
@@ -16,13 +17,30 @@ export interface GeneratedImage {
   seed?: number;
 }
 
+export interface SavedImage extends GeneratedImage {
+  id: string;
+}
+
 export interface SavedPrompt {
   id: string;
   content: string;
   timestamp: number;
 }
 
+export interface GoogleUser {
+  name: string;
+  email: string;
+  picture: string;
+  sub: string;
+}
+
 export enum ViewMode {
   EDITOR = 'EDITOR',
   GALLERY = 'GALLERY'
+}
+
+declare global {
+  interface Window {
+    google?: any;
+  }
 }
